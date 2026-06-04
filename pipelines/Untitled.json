@@ -1,0 +1,37 @@
+db.students.insertMany([
+  {
+    studentId: 1,
+    name: "Ramesh",
+    department: "IT",
+    city: "Chennai",
+    marks: 85
+  },
+  {
+    studentId: 2,
+    name: "John",
+    department: "IT",
+    city: "Bangalore",
+    marks: 70
+  },
+  {
+    studentId: 3,
+    name: "Priya",
+    department: "HR",
+    city: "Chennai",
+    marks: 95
+  },
+  {
+    studentId: 4,
+    name: "David",
+    department: "Finance",
+    city: "Mumbai",
+    marks: 60
+  },
+  {
+    studentId: 5,
+    name: "Sara",
+    department: "HR",
+    city: "Pune",
+    marks: 88
+  }
+]);

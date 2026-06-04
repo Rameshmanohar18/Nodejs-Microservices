@@ -1,0 +1,48 @@
+{
+  "dashboard": {
+    "title": "Flipkart Clone Production",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[1m])",
+            "legendFormat": "{{method}} {{endpoint}}"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate (5xx)",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{status=~\"5..\"}[1m]) / rate(http_requests_total[1m])"
+          }
+        ]
+      },
+      {
+        "title": "Response Time (P99)",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+          }
+        ]
+      },
+      {
+        "title": "Active Users",
+        "targets": [
+          {
+            "expr": "sum(active_users)"
+          }
+        ]
+      },
+      {
+        "title": "Database Connections",
+        "targets": [
+          {
+            "expr": "mongodb_connections{state='current'}"
+          }
+        ]
+      }
+    ]
+  }
+}

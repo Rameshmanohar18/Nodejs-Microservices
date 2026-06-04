@@ -1,0 +1,380 @@
+name: Flipkart Clone CI/CD Pipeline
+
+# Trigger on push to main/master branch
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # Manual trigger
+
+# Environment variables
+env:
+  DOCKER_REGISTRY: docker.io
+  DOCKER_IMAGE_NAME: flipkart-clone
+  K8S_NAMESPACE: production
+
+jobs:
+  # ==================== JOB 1: Build & Test ====================
+  build-and-test:
+    name: 🔨 Build & Test Application
+    runs-on: ubuntu-latest
+
+    services:
+      # Spin up MongoDB for integration tests
+      mongodb:
+        image: mongo:6
+        ports:
+          - 27017:27017
+
+      # Spin up Redis for tests
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      # Step 1: Checkout code
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      # Step 2: Setup Node.js
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      # Step 3: Install dependencies
+      - name: 📦 Install Dependencies
+        run: npm ci
+
+      # Step 4: Lint code
+      - name: 🔍 Run Linter
+        run: npm run lint
+
+      # Step 5: Run Unit Tests
+      - name: 🧪 Run Unit Tests
+        run: npm run test:unit
+        env:
+          NODE_ENV: test
+          JWT_SECRET: test_secret
+
+      # Step 6: Run Integration Tests
+      - name: 🔗 Run Integration Tests
+        run: npm run test:integration
+        env:
+          NODE_ENV: test
+          MONGODB_URI: mongodb://localhost:27017/test
+          REDIS_HOST: localhost
+
+      # Step 7: Run E2E Tests
+      - name: 🎭 Run E2E Tests
+        run: npm run test:e2e
+
+      # Step 8: Generate Coverage Report
+      - name: 📊 Generate Coverage Report
+        run: npm run test:coverage
+
+      # Step 9: Upload coverage to Codecov
+      - name: 📤 Upload Coverage
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+
+      # Step 10: Build application
+      - name: 🏗️ Build Application
+        run: npm run build
+
+      # Step 11: Upload build artifacts
+      - name: 💾 Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-output
+          path: |
+            dist/
+            package.json
+            package-lock.json
+          retention-days: 7
+
+  # ==================== JOB 2: Security Scan ====================
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    needs: build-and-test
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      # Snyk security scan
+      - name: 🛡️ Run Snyk Security Scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      # Docker image scan
+      - name: 🐳 Scan Docker Image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE_NAME }}:latest
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      # OWASP Dependency Check
+      - name: 🔍 OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "Flipkart Clone"
+          path: "."
+          format: "HTML"
+          out: "reports"
+
+      # Upload security reports
+      - name: 📤 Upload Security Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: reports/
+
+  # ==================== JOB 3: Build Docker Image ====================
+  build-docker:
+    name: 🐳 Build & Push Docker Image
+    runs-on: ubuntu-latest
+    needs: [build-and-test, security-scan]
+    # Only run on main branch or tags
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      # Login to Docker Registry
+      - name: 🔐 Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Set up Docker Buildx
+      - name: 📦 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # Get version number
+      - name: 🏷️ Get Version
+        id: get_version
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "COMMIT_SHA=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
+      # Build and push multi-architecture image
+      - name: 🏗️ Build and Push Docker Image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:latest
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.get_version.outputs.VERSION }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ steps.get_version.outputs.COMMIT_SHA }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NODE_ENV=production
+            VERSION=${{ steps.get_version.outputs.VERSION }}
+
+  # ==================== JOB 4: Deploy to Staging ====================
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-docker
+    environment: staging
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      # Configure kubectl
+      - name: 🔧 Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "latest"
+
+      # Set Kubeconfig for staging
+      - name: 🔑 Set Kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.STAGING_KUBE_CONFIG }}" | base64 --decode > $HOME/.kube/config
+
+      # Deploy to staging Kubernetes
+      - name: 🚢 Deploy to Staging
+        run: |
+          # Update image in deployment
+          kubectl set image deployment/flipkart-app \
+            app=${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_IMAGE_NAME }}:${{ github.sha }} \
+            -n staging
+
+          # Wait for rollout
+          kubectl rollout status deployment/flipkart-app -n staging --timeout=5m
+
+      # Run smoke tests
+      - name: 🔥 Run Smoke Tests
+        run: |
+          # Wait for service to be ready
+          sleep 30
+          # Test health endpoint
+          curl -f https://staging.yourdomain.com/health || exit 1
+
+      # Send notification to Slack
+      - name: 💬 Send Slack Notification
+        uses: act10ns/slack@v1
+        with:
+          status: ${{ job.status }}
+          channel: "#deployments"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+        if: always()
+
+  # ==================== JOB 5: Integration Tests on Staging ====================
+  staging-tests:
+    name: 🧪 Integration Tests on Staging
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment: staging
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      - name: 🔗 Run API Tests on Staging
+        run: |
+          npm run test:api -- --base-url=https://staging.yourdomain.com
+        env:
+          STAGING_API_KEY: ${{ secrets.STAGING_API_KEY }}
+
+      - name: 🎭 Run E2E Tests on Staging
+        run: |
+          npm run test:e2e -- --base-url=https://staging.yourdomain.com
+
+      - name: 📊 Performance Test
+        run: |
+          npm run test:performance -- --url=https://staging.yourdomain.com
+
+  # ==================== JOB 6: Deploy to Production ====================
+  deploy-production:
+    name: 🚀 Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [staging-tests, build-docker]
+    environment: production
+    # Manual approval required
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      # Configure kubectl for production
+      - name: 🔧 Configure kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: 🔑 Set Kubeconfig for Production
+        run: |
+          echo "${{ secrets.PROD_KUBE_CONFIG }}" | base64 --decode > $HOME/.kube/config
+
+      # Deploy with Blue-Green strategy
+      - name: 🔵 Blue-Green Deployment
+        run: |
+          # Deploy new version as 'green'
+          kubectl apply -f k8s/deployment-green.yaml
+
+          # Wait for green deployment to be ready
+          kubectl rollout status deployment/flipkart-app-green -n production
+
+          # Run validation tests on green
+          kubectl exec -it deployment/flipkart-app-green -n production -- node healthcheck.js
+
+          # Switch traffic from blue to green
+          kubectl patch service flipkart-service -n production -p '{"spec":{"selector":{"version":"green"}}}'
+
+          # Keep blue for rollback
+          echo "Blue deployment kept for rollback"
+
+      # Canary deployment (10% traffic first)
+      - name: 🐤 Canary Deployment
+        run: |
+          # Send 10% traffic to new version
+          kubectl apply -f k8s/canary.yaml
+
+          # Monitor for 5 minutes
+          sleep 300
+
+          # If metrics good, increase to 100%
+          kubectl patch canary flipkart-canary -p '{"spec":{"weight":100}}'
+
+      # Database migrations (if any)
+      - name: 🗄️ Run Database Migrations
+        run: |
+          kubectl create job --from=cronjob/db-migrations db-migrate-$(date +%s) -n production
+
+      # Update monitoring
+      - name: 📈 Update Monitoring
+        run: |
+          # Update New Relic deployment marker
+          curl -X PUT "https://api.newrelic.com/v2/applications/${{ secrets.NEWRELIC_APP_ID }}/deployments.json" \
+            -H "X-Api-Key:${{ secrets.NEWRELIC_API_KEY }}" \
+            -d "{\"deployment\":{\"revision\":\"${{ github.sha }}\",\"description\":\"Deployed via GitHub Actions\"}}"
+
+      # Rollback on failure
+      - name: 🔄 Rollback on Failure
+        if: failure()
+        run: |
+          echo "Deployment failed! Rolling back..."
+          kubectl rollout undo deployment/flipkart-app -n production
+          kubectl rollout status deployment/flipkart-app -n production
+
+  # ==================== JOB 7: Post-Deployment Verification ====================
+  verify-deployment:
+    name: ✅ Verify Production Deployment
+    runs-on: ubuntu-latest
+    needs: deploy-production
+
+    steps:
+      - name: 🔍 Health Check
+        run: |
+          for i in {1..30}; do
+            if curl -f https://api.yourdomain.com/health; then
+              echo "✅ Service is healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "❌ Service failed health check"
+          exit 1
+
+      - name: 📊 Verify Metrics
+        run: |
+          # Check error rate
+          ERROR_RATE=$(curl -s https://prometheus.yourdomain.com/api/v1/query?query=rate(http_requests_total{status=~"5.."}[5m]))
+          if [ "$ERROR_RATE" -gt 0.01 ]; then
+            echo "⚠️ High error rate detected: $ERROR_RATE"
+            exit 1
+          fi
+
+      - name: 💬 Send Success Notification
+        uses: act10ns/slack@v1
+        with:
+          status: success
+          channel: "#deployments"
+          message: "✅ Production deployment successful! Version: ${{ github.sha }}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
