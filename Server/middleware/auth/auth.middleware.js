@@ -1,73 +1,66 @@
+import jwt from 'jsonwebtoken';
+import User from '../../models/user.model.js';
+import { catchAsync } from '../../utils/helpers/catchAsync.js';
+import { ApiError } from '../../utils/helpers/apiError.js';
 
-
-
-const jwt = require('jsonwebtoken');
-const User = require('../../models/user.model');
-
-// Use Case 1: Verify user is logged in
-const authenticate = async (req, res, next) => {
+export const protect = catchAsync(async (req, res, next) => {
+  let token;
+  
+  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+    token = req.headers.authorization.split(' ')[1];
+  } else if (req.cookies.accessToken) {
+    token = req.cookies.accessToken;
+  }
+  
+  if (!token) {
+    throw new ApiError(401, 'You are not logged in. Please log in to access this resource');
+  }
+  
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    
-    if (!token) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-    
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id);
+    
+    const user = await User.findById(decoded.id).select('-password');
     
     if (!user) {
-      return res.status(401).json({ error: 'User not found' });
+      throw new ApiError(401, 'The user belonging to this token no longer exists');
     }
     
-    req.user = user;  // Attach user to request
+    if (user.changedPasswordAfter(decoded.iat)) {
+      throw new ApiError(401, 'User recently changed password. Please log in again');
+    }
+    
+    req.user = user;
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid token' });
+    throw new ApiError(401, 'Invalid token. Please log in again');
   }
-};
+});
 
-// Use Case 2: Check user role
-const authorize = (...roles) => {
+export const restrictTo = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ 
-        error: 'You do not have permission to access this resource' 
-      });
+      throw new ApiError(403, 'You do not have permission to perform this action');
     }
     next();
   };
 };
 
-// Use Case 3: Rate limiting per user
-const rateLimit = new Map(); // In production, use Redis
-
-const userRateLimit = (maxRequests = 100, windowMs = 60000) => {
-  return (req, res, next) => {
-    const userId = req.user?.id || req.ip;
-    const now = Date.now();
+export const verifyOwnership = (model) => {
+  return catchAsync(async (req, res, next) => {
+    const resource = await model.findById(req.params.id);
     
-    if (!rateLimit.has(userId)) {
-      rateLimit.set(userId, []);
+    if (!resource) {
+      throw new ApiError(404, 'Resource not found');
     }
     
-    const userRequests = rateLimit.get(userId);
-    const validRequests = userRequests.filter(time => now - time < windowMs);
-    
-    if (validRequests.length >= maxRequests) {
-      return res.status(429).json({ 
-        error: `Too many requests. Limit: ${maxRequests} per minute` 
-      });
+    if (resource.user && resource.user.toString() !== req.user.id && req.user.role !== 'admin') {
+      throw new ApiError(403, 'You do not have permission to access this resource');
     }
     
-    validRequests.push(now);
-    rateLimit.set(userId, validRequests);
+    req.resource = resource;
     next();
-  };
+  });
 };
-
-module.exports = { authenticate, authorize, userRateLimit };
-
 
 
 

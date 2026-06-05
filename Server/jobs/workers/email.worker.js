@@ -1,42 +1,30 @@
-const { emailQueue } = require('../queues/email.queue');
-const EmailService = require('../../services/email.service');
+import { Worker } from 'bullmq';
+import { sendEmail } from '../../services/communication/email.service.js';
+import { redis } from '../../config/database/index.js';
+import logger from '../../config/logger/winston.config.js';
 
-// Worker processes jobs from queue
-emailQueue.process('welcome', async (job) => {
-  console.log(`Processing welcome email for ${job.data.email}`);
+const emailWorker = new Worker('email-queue', async (job) => {
+  const { to, subject, template, data } = job.data;
   
   try {
-    // Actually send the email (this takes time)
-    await EmailService.sendEmailImmediately(
-      job.data.email,
-      'Welcome to Flipkart!',
-      `Hello ${job.data.name}, welcome!`
-    );
-    
-    console.log(`Email sent successfully to ${job.data.email}`);
+    await sendEmail({ email: to, subject, template, data });
+    logger.info(`Email sent to ${to}`);
     return { success: true };
-    
   } catch (error) {
-    console.error(`Failed to send email: ${error.message}`);
-    throw error; // Will trigger retry mechanism
+    logger.error(`Failed to send email to ${to}:`, error);
+    throw error;
   }
+}, {
+  connection: redis.client,
+  concurrency: 5,
 });
 
-emailQueue.process('reminder', async (job) => {
-  await EmailService.sendEmailImmediately(
-    job.data.email,
-    'Reminder: Complete your purchase',
-    'You have items in your cart!'
-  );
+emailWorker.on('completed', (job) => {
+  logger.info(`Email job ${job.id} completed`);
 });
 
-// Monitor queue events
-emailQueue.on('completed', (job, result) => {
-  console.log(`Job ${job.id} completed with result:`, result);
+emailWorker.on('failed', (job, err) => {
+  logger.error(`Email job ${job.id} failed:`, err);
 });
 
-emailQueue.on('failed', (job, err) => {
-  console.error(`Job ${job.id} failed:`, err);
-});
-
-module.exports = emailQueue;
+export default emailWorker;
