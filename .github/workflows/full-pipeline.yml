@@ -1,0 +1,190 @@
+# .github/workflows/full-pipeline.yml
+name: MERN + Testing + DevSecOps Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ==================== PHASE 1: MERN BUILD ====================
+  build-application:
+    name: 📦 Build MERN Application
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+
+      - name: Install Backend Dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Install Frontend Dependencies (React)
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Build Backend
+        run: |
+          cd backend
+          npm run build
+
+  # ==================== PHASE 2: AUTOMATED TESTING ====================
+  automated-testing:
+    name: 🧪 Automated Testing (Jest + Supertest)
+    needs: build-application
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:6
+        ports:
+          - 27017:27017
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run Backend Unit Tests
+        run: |
+          cd backend
+          npm run test:unit
+        env:
+          NODE_ENV: test
+          MONGODB_URI: mongodb://localhost:27017/test
+
+      - name: Run Integration Tests
+        run: |
+          cd backend
+          npm run test:integration
+
+      - name: Run E2E Tests
+        run: |
+          cd backend
+          npm run test:e2e
+
+      - name: Run API Contract Tests
+        run: |
+          cd backend
+          npm run test:contract
+
+      - name: Generate Coverage Report
+        run: |
+          cd backend
+          npm run test:coverage
+          # Ensure coverage threshold is met
+          if [ $(cat coverage/lcov.info | grep -c "SF:") -lt 80 ]; then
+            echo "❌ Coverage below 80%"
+            exit 1
+          fi
+
+      - name: Upload Test Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-reports
+          path: |
+            backend/coverage/
+            backend/test-results/
+            frontend/coverage/
+
+  # ==================== PHASE 3: DEVSECOPS SECURITY SCANS ====================
+  devsecops-security:
+    name: 🛡️ DevSecOps Security Scans
+    needs: automated-testing # Security runs AFTER tests pass
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # ========== SAST (Static Analysis) ==========
+      - name: 🔍 SAST - Semgrep Scan
+        run: |
+          cd backend
+          npx semgrep --config=p/security-audit --config=p/nodejs --json --output sast-report.json
+
+      # ========== Dependency Scan ==========
+      - name: 📦 SCA - Dependency Check
+        run: |
+          cd backend
+          npm audit --json --audit-level=high > dependency-report.json
+
+          # Fail if critical vulnerabilities found
+          if grep -q '"severity":"critical"' dependency-report.json; then
+            echo "❌ Critical dependencies found!"
+            exit 1
+          fi
+
+      # ========== Secrets Detection ==========
+      - name: 🤫 Secrets Scan (Gitleaks)
+        uses: zricethezav/gitleaks-action@v1.6.0
+        with:
+          config-path: .gitleaks.toml
+          fail-on-found: true
+
+      # ========== Container Security ==========
+      - name: 🐳 Build and Scan Container
+        run: |
+          docker build -t flipkart-clone:test -f docker/Dockerfile.security .
+          trivy image --severity HIGH,CRITICAL --exit-code 1 flipkart-clone:test
+
+  # ==================== PHASE 4: RUNTIME TESTING (DAST/IAST) ====================
+  runtime-security:
+    name: 🎯 Runtime Security Testing (DAST/IAST)
+    needs: devsecops-security
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Staging Environment
+        run: |
+          kubectl apply -f k8s/staging/
+          kubectl wait --for=condition=ready pod -l app=flipkart
+
+      # ========== DAST ==========
+      - name: 🔥 OWASP ZAP DAST Scan
+        uses: zaproxy/action-full-scan@v0.5.0
+        with:
+          target: https://staging.flipkart-clone.com
+          allow_issue_writing: false
+
+      # ========== IAST (During Tests) ==========
+      - name: 🧬 IAST - Run Tests with Instrumentation
+        run: |
+          cd backend
+          IAST_ENABLED=true npm run test:integration -- --runInBand
+
+          # Check for IAST findings
+          if [ -f iast-findings.json ]; then
+            echo "⚠️ IAST detected vulnerabilities during test execution"
+          fi
+
+  # ==================== PHASE 5: DEPLOYMENT ====================
+  deploy-production:
+    name: 🚀 Deploy to Production
+    needs: [automated-testing, devsecops-security, runtime-security]
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Deploy with RASP Enabled
+        run: |
+          kubectl set image deployment/flipkart-app app=flipkart-clone:latest
+          kubectl set env deployment/flipkart-app RASP_ENABLED=true
+
+      - name: Health Check
+        run: |
+          curl --retry 5 --retry-delay 5 https://api.flipkart-clone.com/health

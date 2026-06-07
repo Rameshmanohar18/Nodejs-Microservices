@@ -149,3 +149,59 @@ volumes:
   elasticsearch_prod_data:
   prometheus_prod_data:
   grafana_prod_data:
+
+  # 
+
+  # 
+
+
+
+  version: '3.8'
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    restart: always
+    environment:
+      - NODE_ENV=production
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mongodb:
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+    command: mongod --replSet rs0 --bind_ip_all
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+
+          # 
+
+
+
+
+          # 

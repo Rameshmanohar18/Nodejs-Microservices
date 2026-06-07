@@ -1,14 +1,16 @@
 {
   "name": "nodejs-microservices-auth-covered",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server/server.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "node server/server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Backend for a full-stack blog application with advanced roles and AI features",
   "dependencies": {
     "aws-sdk": "^2.1693.0",
     "axios": "^1.17.0",

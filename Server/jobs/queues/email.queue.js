@@ -1,7 +1,3 @@
-//  2. JOBS Folder (Asynchronous Background Processing)
-// What it does: Handles tasks that run outside the request-response cycle
-// 2a. QUEUES Folder - Task Manager
-
 const Bull = require('bull');
 const redisConfig = require('../../config/redis.config');
 
