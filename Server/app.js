@@ -8,7 +8,7 @@ import { connectDatabases } from './config/database/index.js';
 import morganMiddleware from './config/logger/morgan.config.js';
 import { errorHandler, notFound } from './middleware/error/error.middleware.js';
 import routes from './routes/v1/index.js';
-import corsOptions from './config/cors.config.js';
+import corsOptions from './config/database/cors.config.js';
 import { limiter } from './config/rateLimit.config.js';
 import { initializeSocket } from './sockets/socketServer.js';
 import { eventEmitter } from './events/eventEmitter.js';

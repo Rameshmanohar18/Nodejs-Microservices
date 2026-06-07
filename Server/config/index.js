@@ -1,4 +1,4 @@
-import mongodb from './mongodb.config.js';
+import mongodb from './database/mongodb.config.js';
 import redis from './redis.config.js';
 
 export const connectDatabases = async () => {

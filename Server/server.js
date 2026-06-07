@@ -1,5 +1,6 @@
 import app from './app.js';
 import logger from './config/logger/winston.config.js';
+// import initSocketSercer from "./sockets";
 
 const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
